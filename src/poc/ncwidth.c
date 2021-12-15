@@ -26,7 +26,7 @@ add_wchar(wchar_t** wbuf, size_t* bufsize, size_t* used, wchar_t wc){
 static int
 defaultout(void){
   for(int i = 0 ; i < 128 ; ++i){
-    wchar_t w = i;
+    wint_t w = i;
     int width = wcwidth(w);
     printf("0x%02x: %d%c\t", w, width, width < 0 ? '!' : ' ');
     if(i % 4 == 3){
@@ -54,7 +54,7 @@ int main(int argc, char **argv){
     int i = 0;
     used = 0;
     while(*arg){
-      mbstate_t mbs = {};
+      mbstate_t mbs = {0};
       wchar_t w;
       size_t conv = mbrtowc(&w, arg, strlen(arg), &mbs);
       if(conv == (size_t)-1 || conv == (size_t)-2){

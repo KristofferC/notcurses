@@ -19,13 +19,13 @@ extern "C" {
 #define TIMER_ABSTIME 1
 #endif
 
-#ifdef  __MINGW64__
+#ifdef  __MINGW32__
 static inline char
 path_separator(void){
   return '\\';
 }
 #define NL "\r\n"
-#include <Lmcons.h>
+#include <lmcons.h>
 #include <winsock2.h>
 #define tcgetattr(x, y) (0)
 #define tcsetattr(x, y, z) (0)
@@ -147,7 +147,7 @@ notcurses_data_path(const char* ddir, const char* f){
 #ifdef __cplusplus
 }
 #else
-#ifdef __MINGW64__
+#ifdef __MINGW32__
 char* strndup(const char* str, size_t size);
 #endif
 #endif

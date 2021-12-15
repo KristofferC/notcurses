@@ -466,7 +466,7 @@ init_terminfo_esc(tinfo* ti, const char* name, escape_e idx,
 // which can be identified directly, sans queries.
 // we do not send this query on Windows because it is bled through ConHost,
 // and echoed onto the standard output.
-#ifndef __MINGW64__
+#ifndef __MINGW32__
 #define KITTYQUERY "\x1b_Gi=1,a=q;\x1b\\"
 #else
 #define KITTYQUERY
@@ -600,34 +600,48 @@ send_initial_queries(int fd, unsigned minimal, unsigned noaltscreen,
   return 0;
 }
 
-int enter_alternate_screen(FILE* fp, tinfo* ti, unsigned flush, unsigned drain){
+int enter_alternate_screen(int fd, FILE* ttyfp, tinfo* ti, unsigned drain){
   if(ti->in_alt_screen){
     return 0;
+  }
+  const char* popcolors = get_escape(ti, ESCAPE_RESTORECOLORS);
+  if(popcolors){
+    if(term_emit(popcolors, ttyfp, true)){
+      return -1;
+    }
   }
   const char* smcup = get_escape(ti, ESCAPE_SMCUP);
   if(smcup == NULL){
     logerror("alternate screen is unavailable");
     return -1;
   }
-  if(term_emit(smcup, fp, false) < 0){
+  if(tty_emit(smcup, fd) < 0){
     return -1;
   }
   if(!drain){
     if(ti->kbdlevel){
-      if(term_emit(KKBDENTER, fp, flush)){
+      if(tty_emit(KKBDENTER, fd)){
         return -1;
       }
     }else{
-      if(term_emit(XTMODKEYS, fp, flush)){
+      if(tty_emit(XTMODKEYS, fd)){
         return -1;
       }
+    }
+  }
+  const char* pushcolors = get_escape(ti, ESCAPE_SAVECOLORS);
+  if(pushcolors){
+    if(term_emit(pushcolors, ttyfp, true)){
+      return -1;
     }
   }
   ti->in_alt_screen = true;
   return 0;
 }
 
-int leave_alternate_screen(FILE* fp, tinfo* ti, unsigned drain){
+// we need to send the palette push/pop to the bulk out (as that's where the
+// palette reprogramming happens), but rmcup+keyboard go to ttyfd.
+int leave_alternate_screen(int fd, FILE* fp, tinfo* ti, unsigned drain){
   if(!ti->in_alt_screen){
     return 0;
   }
@@ -638,27 +652,39 @@ int leave_alternate_screen(FILE* fp, tinfo* ti, unsigned drain){
   }
   if(!drain){
     if(ti->kbdlevel){
-      if(term_emit(KKEYBOARD_POP, fp, false)){
+      if(tty_emit(KKEYBOARD_POP, fd)){
         return -1;
       }
     }else{
-      if(term_emit(XTMODKEYSUNDO, fp, false)){
+      if(tty_emit(XTMODKEYSUNDO, fd)){
         return -1;
       }
     }
   }
-  if(term_emit(rmcup, fp, drain)){
+  const char* popcolors = get_escape(ti, ESCAPE_RESTORECOLORS);
+  if(popcolors){
+    if(term_emit(popcolors, fp, true)){
+      return -1;
+    }
+  }
+  if(tty_emit(rmcup, fd)){
     return -1;
   }
   if(!drain){
     if(ti->kbdlevel){
-      if(term_emit(KKBDENTER, fp, true)){
+      if(tty_emit(KKBDENTER, fd)){
         return -1;
       }
     }else{
-      if(term_emit(XTMODKEYS, fp, true)){
+      if(tty_emit(XTMODKEYS, fd)){
         return -1;
       }
+    }
+  }
+  const char* pushcolors = get_escape(ti, ESCAPE_SAVECOLORS);
+  if(pushcolors){
+    if(term_emit(popcolors, fp, true)){
+      return -1;
     }
   }
   ti->in_alt_screen = false;
@@ -750,7 +776,7 @@ static int
 apply_term_heuristics(tinfo* ti, const char* termname, queried_terminals_e qterm,
                       size_t* tablelen, size_t* tableused, bool* invertsixel,
                       unsigned nonewfonts){
-#ifdef __MINGW64__
+#ifdef __MINGW32__
   if(qterm == TERMINAL_UNKNOWN){
     qterm = TERMINAL_MSTERMINAL;
   }
@@ -777,11 +803,16 @@ apply_term_heuristics(tinfo* ti, const char* termname, queried_terminals_e qterm
       setup_kitty_bitmaps(ti, ti->ttyfd, NCPIXEL_KITTY_SELFREF);
     }else*/ if(compare_versions(ti->termversion, "0.20.0") >= 0){
       setup_kitty_bitmaps(ti, ti->ttyfd, NCPIXEL_KITTY_ANIMATED);
+      // XTPOPCOLORS didn't reliably work until a bugfix late in 0.23.1 (see
+      // https://github.com/kovidgoyal/kitty/issues/4351), so reprogram the
+      // font directly until we exceed that version.
+      if(compare_versions(ti->termversion, "0.23.1") > 0){
+        if(add_pushcolors_escapes(ti, tablelen, tableused)){
+          return -1;
+        }
+      }
     }else{
       setup_kitty_bitmaps(ti, ti->ttyfd, NCPIXEL_KITTY_STATIC);
-    }
-    if(add_pushcolors_escapes(ti, tablelen, tableused)){
-      return -1;
     }
     // kitty SUM doesn't want long sequences, which is exactly where we use
     // it. remove support (we pick it up from queries).
@@ -975,7 +1006,7 @@ macos_early_matches(void){
 #endif
 
 #ifndef __APPLE__
-#ifndef __MINGW64__
+#ifndef __MINGW32__
 // rxvt has a deeply fucked up palette code implementation. its responses are
 // terminated with a bare ESC instead of BEL or ST, impossible to encode in
 // our automaton alongside the proper flow. its "oc" doesn't reset the palette,
@@ -1034,7 +1065,7 @@ int interrogate_terminfo(tinfo* ti, FILE* out, unsigned utf8,
   const char* tname = NULL;
 #ifdef __APPLE__
   ti->qterm = macos_early_matches();
-#elif defined(__MINGW64__)
+#elif defined(__MINGW32__)
   if(termtype){
     logwarn("termtype (%s) ignored on windows\n", termtype);
   }
@@ -1075,7 +1106,7 @@ int interrogate_terminfo(tinfo* ti, FILE* out, unsigned utf8,
       goto err;
     }
   }
-#ifndef __MINGW64__
+#ifndef __MINGW32__
   // windows doesn't really have a concept of terminfo. you might ssh into other
   // machines, but they'll use the terminfo installed thereon (putty, etc.).
   int termerr;
@@ -1394,7 +1425,7 @@ int locate_cursor(tinfo* ti, unsigned* cursor_y, unsigned* cursor_x){
 }
 
 int tiocgwinsz(int fd, struct winsize* ws){
-#ifndef __MINGW64__
+#ifndef __MINGW32__
   int i = ioctl(fd, TIOCGWINSZ, ws);
   if(i < 0){
     logerror("TIOCGWINSZ failed on %d (%s)\n", fd, strerror(errno));
@@ -1413,7 +1444,7 @@ int tiocgwinsz(int fd, struct winsize* ws){
 }
 
 int cbreak_mode(tinfo* ti){
-#ifndef __MINGW64__
+#ifndef __MINGW32__
   int ttyfd = ti->ttyfd;
   if(ttyfd < 0){
     return 0;

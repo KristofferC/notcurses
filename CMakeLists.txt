@@ -1,6 +1,6 @@
 # 3.14.0 introduced NAME_WLE
 cmake_minimum_required(VERSION 3.14.0)
-project(notcurses VERSION 3.0.0
+project(notcurses VERSION 3.0.1
   DESCRIPTION "Blingful UI for modern terminal emulators"
   HOMEPAGE_URL "https://nick-black.com/dankwiki/index.php/notcurses"
   LANGUAGES C)
@@ -23,6 +23,7 @@ option(USE_DEFLATE "Use libdeflate instead of libz" ON)
 option(USE_DOXYGEN "Build HTML cross reference with doxygen" OFF)
 option(USE_GPM "Enable libgpm console mouse support" OFF)
 option(USE_PANDOC "Build man pages and HTML reference with pandoc" ON)
+option(BUILD_EXECUTABLES "Build executables" ON)
 option(USE_POC "Build small, uninstalled proof-of-concept binaries" ON)
 option(USE_QRCODEGEN "Enable libqrcodegen QR code support" OFF)
 option(USE_STATIC "Build static libraries (in addition to shared)" ON)
@@ -45,6 +46,10 @@ elseif(${USE_MULTIMEDIA} STREQUAL "oiio")
   set(USE_OIIO ON)
 elseif(NOT ${USE_MULTIMEDIA} STREQUAL "none")
   message(FATAL_ERROR "USE_MULTIMEDIA must be one of 'oiio', 'ffmpeg', 'none' (was '${USE_MULTIMEDIA}').")
+endif()
+if (NOT BUILD_EXECUTABLES AND USE_POC)
+  message(WARNING "Disabling USE_POC since BUILD_EXECUTABLES=OFF")
+  set(USE_POC OFF)
 endif()
 
 if(${USE_CXX})
@@ -554,6 +559,13 @@ if(${USE_CXX})
 endif()
 endif()
 
+# documentation source, processed by pandoc into XHTML and man pages. declare
+# them here so that we can filter out man pages for binaries which aren't
+# going to be installed.
+file(GLOB MANSOURCE1 CONFIGURE_DEPENDS doc/man/man1/*.md)
+file(GLOB MANSOURCE3 CONFIGURE_DEPENDS doc/man/man3/*.md)
+
+if(BUILD_EXECUTABLES)
 ############################################################################
 # notcurses-demo
 file(GLOB DEMOSRCS CONFIGURE_DEPENDS src/demo/*.c)
@@ -642,8 +654,8 @@ endif()
 ############################################################################
 # tfman
 if(NOT WIN32)
-file(GLOB tfmanSRCS CONFIGURE_DEPENDS src/man/*.c)
-add_executable(tfman ${tfmanSRCS} ${COMPATSRC})
+file(GLOB TFMANSRCS CONFIGURE_DEPENDS src/man/*.c)
+add_executable(tfman ${TFMANSRCS} ${COMPATSRC})
 target_compile_definitions(tfman
   PRIVATE
     _GNU_SOURCE
@@ -684,11 +696,6 @@ target_link_libraries(ncneofetch
     "${LIBRT}"
 )
 
-# documentation source, processed by pandoc into XHTML and man pages. declare
-# them here so that we can filter out man pages for binaries which aren't
-# going to be installed.
-file(GLOB MANSOURCE1 CONFIGURE_DEPENDS doc/man/man1/*.md)
-file(GLOB MANSOURCE3 CONFIGURE_DEPENDS doc/man/man3/*.md)
 
 # all further binaries require multimedia and C++ support
 if(${USE_CXX})
@@ -731,6 +738,9 @@ target_link_libraries(ncplayer
 )
 endif()
 endif()
+else()
+set(MANSOURCE1 "") # no executables were built
+endif() # BUILD_EXECUTABLES
 
 ############################################################################
 # testing
@@ -982,18 +992,20 @@ list(FILTER TESTDATA EXCLUDE REGEX ".*osp$")
 install(FILES ${TESTDATA} DESTINATION ${CMAKE_INSTALL_DATADIR}/notcurses)
 endif()
 
+list(FILTER MANPAGES1 EXCLUDE REGEX "tfman.1")
 install(FILES ${MANPAGES1} DESTINATION ${CMAKE_INSTALL_DATADIR}/man/man1)
 install(FILES ${MANPAGES3} DESTINATION ${CMAKE_INSTALL_DATADIR}/man/man3)
 file(GLOB MARKDOWN CONFIGURE_DEPENDS *.md)
 list(FILTER MARKDOWN EXCLUDE REGEX "INSTALL.md")
 install(FILES ${MARKDOWN} DESTINATION ${CMAKE_INSTALL_DOCDIR})
 
+if(BUILD_EXECUTABLES)
 install(TARGETS notcurses-demo DESTINATION bin)
 install(TARGETS notcurses-info DESTINATION bin)
 install(TARGETS ncneofetch DESTINATION bin)
-if(NOT WIN32)
-install(TARGETS tfman DESTINATION bin)
-endif()
+#if(NOT WIN32)
+#install(TARGETS tfman DESTINATION bin)
+#endif()
 if(${USE_CXX})
 install(TARGETS notcurses-input DESTINATION bin)
 install(TARGETS nctetris DESTINATION bin)
@@ -1002,6 +1014,7 @@ install(TARGETS ncls DESTINATION bin)
 install(TARGETS ncplayer DESTINATION bin)
 endif()
 endif()
+endif() # BUILD_EXECUTABLES
 
 LIST(APPEND INSTLIBS notcurses-core notcurses)
 if(${USE_STATIC})

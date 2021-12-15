@@ -194,7 +194,7 @@ typedef struct tinfo {
   char* linux_fb_dev;        // device corresponding to linux_fb_dev
   uint8_t* linux_fbuffer;    // mmap()ed framebuffer
   size_t linux_fb_len;       // size of map
-#elif defined(__MINGW64__)
+#elif defined(__MINGW32__)
   HANDLE inhandle;
   HANDLE outhandle;
 #endif
@@ -335,8 +335,8 @@ term_emit(const char* seq, FILE* out, bool flush){
 }
 
 // |drain| is set iff we're draining input.
-int enter_alternate_screen(FILE* fp, tinfo* ti, unsigned flush, unsigned drain);
-int leave_alternate_screen(FILE* fp, tinfo* ti, unsigned drain);
+int enter_alternate_screen(int ttyfd, FILE* ttyfp, tinfo* ti, unsigned drain);
+int leave_alternate_screen(int ttyfd, FILE* ttyfp, tinfo* ti, unsigned drain);
 
 int cbreak_mode(tinfo* ti);
 

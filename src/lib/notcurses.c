@@ -29,7 +29,10 @@ void notcurses_version_components(int* major, int* minor, int* patch, int* tweak
 }
 
 int notcurses_enter_alternate_screen(notcurses* nc){
-  if(enter_alternate_screen(nc->ttyfp, &nc->tcache, true, nc->flags & NCOPTION_DRAIN_INPUT)){
+  if(nc->tcache.ttyfd < 0){
+    return -1;
+  }
+  if(enter_alternate_screen(nc->tcache.ttyfd, nc->ttyfp, &nc->tcache, nc->flags & NCOPTION_DRAIN_INPUT)){
     return -1;
   }
   ncplane_set_scrolling(notcurses_stdplane(nc), false);
@@ -37,7 +40,11 @@ int notcurses_enter_alternate_screen(notcurses* nc){
 }
 
 int notcurses_leave_alternate_screen(notcurses* nc){
-  if(leave_alternate_screen(nc->ttyfp, &nc->tcache, nc->flags & NCOPTION_DRAIN_INPUT)){
+  if(nc->tcache.ttyfd < 0){
+    return -1;
+  }
+  if(leave_alternate_screen(nc->tcache.ttyfd, nc->ttyfp,
+                            &nc->tcache, nc->flags & NCOPTION_DRAIN_INPUT)){
     return -1;
   }
   // move to the end of our output
@@ -318,7 +325,7 @@ int update_term_dimensions(unsigned* rows, unsigned* cols, tinfo* tcache,
     cols = &colsafe;
     colsafe = tcache->dimx;
   }
-#ifndef __MINGW64__
+#ifndef __MINGW32__
   struct winsize ws;
   if(tiocgwinsz(tcache->ttyfd, &ws)){
     return -1;
@@ -834,20 +841,39 @@ int ncplane_resize_internal(ncplane* n, int keepy, int keepx,
   int keptarea = keepleny * keeplenx;
   int newarea = ylen * xlen;
   size_t fbsize = sizeof(nccell) * newarea;
-  // an important optimization is the case where nothing needs to be moved,
-  // true when either the keptarea is 0 or the old and new x dimensions are
-  // equal, and we're keeping the full x dimension, and any material we're
-  // keeping starts at the top. in this case, we try to realloc() and avoid
-  // any copying whatsoever (we otherwise incur at least one copy due to
-  // always using a new area). set realloced high in this event, so we don't
-  // free anything.
   nccell* fb;
-  bool realloced = false;
-  if(keptarea == 0 || (cols == xlen && cols == keeplenx && keepy == 0)){
+  // there are two cases worth optimizing:
+  //
+  // * nothing is kept. we malloc() a new cellmatrix, dump the EGCpool in
+  //    toto, and zero out the matrix. no copies, one memset.
+  // * old and new x dimensions match, and we're keeping the full width.
+  //    we release any cells we're about to lose, realloc() the cellmatrix,
+  //    and zero out any new cells. so long as the realloc() doesn't move
+  //    us, there are no copies, one memset, one iteration (since this is
+  //    most often due to autogrowth by a single line, the likelihood that
+  //    we remain where we are is pretty high).
+  // * otherwise, we malloc() a new cellmatrix, zero out any new cells,
+  //    copy over any reused cells, and release any lost cells. one
+  //    gigantic iteration.
+  // we might realloc instead of mallocing, in which case we NULL out
+  // |preserved|. it must otherwise be free()d at the end.
+  nccell* preserved = n->fb;
+  if(cols == xlen && cols == keeplenx && keepleny && !keepy){
+    // we need release the cells that we're losing, lest we leak EGCpool
+    // memory. unfortunately, this means we mutate the plane on the error case.
+    // any solution would involve copying them out first. we only do this if
+    // we're keeping some, as we otherwise drop the EGCpool in toto.
+    if(n->leny > keepleny){
+      for(unsigned y = keepleny ; y < n->leny ; ++y){
+        for(unsigned x = 0 ; x < n->lenx ; ++x){
+          nccell_release(n, ncplane_cell_ref_yx(n, y, x));
+        }
+      }
+    }
     if((fb = realloc(n->fb, fbsize)) == NULL){
       return -1;
     }
-    realloced = true;
+    preserved = NULL;
   }else{
     if((fb = malloc(fbsize)) == NULL){
       return -1;
@@ -858,7 +884,7 @@ int ncplane_resize_internal(ncplane* n, int keepy, int keepx,
     // FIXME first, free any disposed auxiliary vectors!
     tament* tmptam = realloc(n->tam, sizeof(*tmptam) * newarea);
     if(tmptam == NULL){
-      if(!realloced){
+      if(preserved){
         free(fb);
       }
       return -1;
@@ -875,12 +901,10 @@ int ncplane_resize_internal(ncplane* n, int keepy, int keepx,
   if(n->x >= xlen){
     n->x = xlen - 1;
   }
-  nccell* preserved = n->fb;
   pthread_mutex_lock(&nc->stats.lock);
-    ncplane_notcurses(n)->stats.s.fbbytes -= sizeof(*preserved) * (rows * cols);
+    ncplane_notcurses(n)->stats.s.fbbytes -= sizeof(*fb) * (rows * cols);
     ncplane_notcurses(n)->stats.s.fbbytes += fbsize;
   pthread_mutex_unlock(&nc->stats.lock);
-  n->fb = fb;
   const int oldabsy = n->absy;
   // go ahead and move. we can no longer fail at this point. but don't yet
   // resize, because n->len[xy] are used in fbcellidx() in the loop below. we
@@ -893,9 +917,10 @@ int ncplane_resize_internal(ncplane* n, int keepy, int keepx,
     // and keep it. perhaps we ought compact it?
     memset(fb, 0, sizeof(*fb) * newarea);
     egcpool_dump(&n->pool);
-  }else if(realloced){
+  }else if(!preserved){
     // the x dimensions are equal, and we're keeping across the width. only the
-    // y dimension changed. at worst, we need zero some out.
+    // y dimension changed. if we grew, we need zero out the new cells (if we
+    // shrunk, we already released the old cells prior to the realloc).
     unsigned tozorch = (ylen - keepleny) * xlen * sizeof(*fb);
     if(tozorch){
       unsigned zorchoff = keepleny * xlen;
@@ -928,17 +953,18 @@ int ncplane_resize_internal(ncplane* n, int keepy, int keepx,
         memcpy(fb + copyoff, preserved + sourceidx, sizeof(*fb) * keeplenx);
         copyoff += keeplenx;
         copied += keeplenx;
-        if(xlen > copied){
-          memset(fb + copyoff, 0, sizeof(*fb) * (xlen - copied));
+        unsigned perline = xlen - copied;
+        for(unsigned x = copyoff ; x < n->lenx ; ++x){
+          nccell_release(n, ncplane_cell_ref_yx(n, sourceoffy, x));
         }
+        memset(fb + copyoff, 0, sizeof(*fb) * perline);
       }
     }
   }
+  n->fb = fb;
   n->lenx = xlen;
   n->leny = ylen;
-  if(!realloced){
-    free(preserved);
-  }
+  free(preserved);
   return resize_callbacks_children(n);
 }
 
@@ -1032,7 +1058,7 @@ int ncplane_destroy_family(ncplane *ncp){
 // if that flag is set, we take the locale and encoding as we get them.
 void init_lang(void){
   char* setret;
-#ifdef __MINGW64__
+#ifdef __MINGW32__
   if((setret = setlocale(LC_ALL, ".UTF8")) == NULL){
     logwarn("couldn't set LC_ALL to utf8\n");
   }
@@ -1047,7 +1073,7 @@ void init_lang(void){
     loginfo("LANG was explicitly set to %s, not changing locale\n", lang);
     return;
   }
-#ifndef __MINGW64__
+#ifndef __MINGW32__
   if((setret = setlocale(LC_ALL, "")) == NULL){
     logwarn("setting locale based on LANG failed\n");
   }
@@ -1403,7 +1429,7 @@ int notcurses_stop(notcurses* nc){
     if(!(nc->flags & NCOPTION_SUPPRESS_BANNERS)){
       summarize_stats(nc);
     }
-#ifndef __MINGW64__
+#ifndef __MINGW32__
     del_curterm(cur_term);
 #endif
     ret |= pthread_mutex_destroy(&nc->stats.lock);
@@ -1870,7 +1896,7 @@ int ncplane_putc_yx(ncplane* n, int y, int x, const nccell* c){
   // nccell_extended_gcluster(). so we must copy and free it.
   char* egc = nccell_strdup(n, c);
   if(egc == NULL){
-    logerror("coudln't duplicate cell\n");
+    logerror("couldn't duplicate cell\n");
     return -1;
   }
   int r = ncplane_put(n, y, x, egc, cols, c->stylemask, c->channels, strlen(egc));
@@ -2989,7 +3015,7 @@ int ncdirect_inputready_fd(ncdirect* n){
 static int
 get_blitter_egc_idx(const struct blitset* bset, const char* egc){
   wchar_t wc;
-  mbstate_t mbs = {};
+  mbstate_t mbs = {0};
   size_t sret = mbrtowc(&wc, egc, strlen(egc), &mbs);
   if(sret == (size_t)-1 || sret == (size_t)-2){
     return -1;
@@ -3171,7 +3197,7 @@ void nclog(const char* fmt, ...){
 }
 
 int ncplane_putwstr_stained(ncplane* n, const wchar_t* gclustarr){
-  mbstate_t ps = {};
+  mbstate_t ps = {0};
   const wchar_t** wset = &gclustarr;
   size_t mbytes = wcsrtombs(NULL, wset, 0, &ps);
   if(mbytes == (size_t)-1){

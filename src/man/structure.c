@@ -8,19 +8,30 @@ typedef struct docnode {
   char* title;
   int line;
   docstruct_e level;
+  int y;
 } docnode;
 
 typedef struct docstructure {
   struct nctree* nct;
-  // one entry for each hierarchy level + terminator
+  // one entry for each hierarchy level + terminator, only used during creation
   unsigned curpath[HIERARCHY_MAX + 1];
+  int cury;
+  bool visible;
 } docstructure;
 
 static int
 docstruct_callback(struct ncplane* n, void* curry, int i){
-  (void)n; // FIXME
-  (void)curry;
-  (void)i;
+  if(n){
+    docnode* dn = curry;
+    uint64_t channels =
+      NCCHANNELS_INITIALIZER(0xff, 0xff, 0xff, 0x49,
+                             (0x9d - 0x8 * i), (0x9d + 0x8 * i));
+    ncplane_set_channels(n, channels);
+    ncplane_erase(n);
+    ncplane_putstr_aligned(n, 0, NCALIGN_RIGHT, dn->title);
+    ncplane_resize_simple(n, 1, ncplane_dim_x(n));
+    (void)i;
+  }
   return 0;
 }
 
@@ -34,7 +45,7 @@ docstructure* docstructure_create(struct ncplane* n){
   ncplane_options nopts = {
     .rows = ROWS,
     .cols = ncplane_dim_x(n) / COLDIV,
-    .y = ncplane_dim_y(n) - ROWS,
+    .y = ncplane_dim_y(n) - ROWS - 1,
     .x = ncplane_dim_x(n) - (ncplane_dim_x(n) / COLDIV) - 1,
     .flags = NCPLANE_OPTION_AUTOGROW, // autogrow to right
   };
@@ -42,8 +53,6 @@ docstructure* docstructure_create(struct ncplane* n){
   if(p == NULL){
     return NULL;
   }
-  uint64_t channels = NCCHANNELS_INITIALIZER(0, 0, 0, 0x80, 0x80, 0x80);
-  ncplane_set_base(p, "", 0, channels);
   nctree_options topts = {
     .nctreecb = docstruct_callback,
   };
@@ -54,7 +63,21 @@ docstructure* docstructure_create(struct ncplane* n){
   for(unsigned z = 0 ; z < sizeof(ds->curpath) / sizeof(*ds->curpath) ; ++z){
     ds->curpath[z] = UINT_MAX;
   }
+  ds->visible = true;
+  ds->cury = 0;
   return ds;
+}
+
+// to show the structure menu, it ought be on top. otherwise, the page plane
+// ought be below the bar, which ought be on top.
+void docstructure_toggle(struct ncplane* p, struct ncplane* b, docstructure* ds){
+  if(!(ds->visible = !ds->visible)){
+    ncplane_move_top(p);
+    ncplane_move_top(b);
+  }else{
+    ncplane_move_bottom(p);
+    ncplane_move_bottom(notcurses_stdplane(ncplane_notcurses(p)));
+  }
 }
 
 void docstructure_free(docstructure* ds){
@@ -73,7 +96,7 @@ docnode_free(docnode* dn){
 }
 
 static docnode*
-docnode_create(const char* title, int line, docstruct_e level){
+docnode_create(const char* title, int line, docstruct_e level, int y){
   docnode* dn = malloc(sizeof(*dn));
   if(dn == NULL){
     return NULL;
@@ -84,32 +107,34 @@ docnode_create(const char* title, int line, docstruct_e level){
   }
   dn->level = level;
   dn->line = line;
+  dn->y = -y;
   return dn;
 }
 
 // add the specified [sub]section to the document strucure. |line| refers to
 // the row on the display plane, *not* the line in the original content.
 int docstructure_add(docstructure* ds, const char* title, int line,
-                     docstruct_e level){
+                     docstruct_e level, int y){
   unsigned addpath[sizeof(ds->curpath) / sizeof(*ds->curpath)];
   if(level < 0 || (unsigned)level >= sizeof(addpath) / sizeof(*addpath) - 1){
     fprintf(stderr, "invalid level %d\n", level);
     return -1;
   }
-  docnode* dn = docnode_create(title, line, level);
+  docnode* dn = docnode_create(title, line, level, y);
   if(dn == NULL){
     return -1;
   }
   unsigned z = 0;
-  while(z < level){
+  while(z <= level){
     if((addpath[z] = ds->curpath[z]) == UINT_MAX){
       ds->curpath[z] = 0;
       addpath[z] = 0;
+    }else if(z == level){
+      addpath[z] = ++ds->curpath[z];
     }
     ++z;
   }
-  addpath[z] = ds->curpath[z] + 1;
-  addpath[z + 1] = UINT_MAX;
+  addpath[z] = UINT_MAX;
   struct nctree_item nitem = {
     .curry = dn,
   };
@@ -118,6 +143,33 @@ int docstructure_add(docstructure* ds, const char* title, int line,
     return -1;
   }
   ds->curpath[z] = addpath[z];
+  if(nctree_redraw(ds->nct)){
+    return -1;
+  }
+  return 0;
+}
+
+int docstructure_move(docstructure* ds, int newy){
+  docnode* pdn = NULL;
+  docnode* dn;
+  if(newy > ds->cury){
+    while((dn = nctree_prev(ds->nct)) != pdn){
+      if(dn->y > newy){
+        dn = nctree_next(ds->nct);
+        break;
+      }
+      pdn = dn;
+    }
+  }else if(newy < ds->cury){
+    while((dn = nctree_next(ds->nct)) != pdn){
+      if(dn->y < newy){
+        dn = nctree_prev(ds->nct);
+        break;
+      }
+      pdn = dn;
+    }
+  }
+  ds->cury = newy;
   if(nctree_redraw(ds->nct)){
     return -1;
   }

@@ -119,7 +119,7 @@ may well be possible to use still older versions. Let me know of any successes!
 * (OPTIONAL) (python bindings): Python 3.7+, [CFFI](https://pypi.org/project/cffi/) 1.13.2+, [pypandoc](https://pypi.org/project/pypandoc/) 1.5+
 * (runtime) Linux 5.3+, FreeBSD 11+, DragonFly BSD 5.9+, Windows 10 v1093+, or macOS 11.4+
 
-[Here's more information](INSTALL.md) on building and installation.
+More information on building and installation is available in [INSTALL.md](INSTALL.md).
 
 ### Wrappers
 
@@ -147,7 +147,6 @@ Nine binaries are installed as part of Notcurses:
 * `notcurses-info`: detect and print terminal capabilities/diagnostics
 * `notcurses-input`: decode and print keypresses
 * `notcurses-tester`: unit testing
-* `tfman`: a fancy manual browser
 
 To run `notcurses-demo` from a checkout, provide the `data` directory via
 the `-p` argument. Demos requiring data files will otherwise abort. The base

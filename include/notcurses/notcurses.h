@@ -24,7 +24,7 @@ extern "C" {
 #define RESTRICT restrict
 #endif
 
-#ifndef __MINGW64__
+#ifndef __MINGW32__
 #define API __attribute__((visibility("default")))
 #else
 #define API __declspec(dllexport)
@@ -121,12 +121,12 @@ typedef enum {
 
 // initialize a 32-bit channel pair with specified RGB
 #define NCCHANNEL_INITIALIZER(r, g, b) \
-  (((uint32_t)r << 16u) + ((uint32_t)g << 8u) + (b) + NC_BGDEFAULT_MASK)
+  (((uint32_t)(r) << 16u) + ((uint32_t)(g) << 8u) + (b) + NC_BGDEFAULT_MASK)
 
 // initialize a 64-bit channel pair with specified RGB fg/bg
 #define NCCHANNELS_INITIALIZER(fr, fg, fb, br, bg, bb) \
-  ((NCCHANNEL_INITIALIZER(fr, fg, fb) << 32ull) + \
-   (NCCHANNEL_INITIALIZER(br, bg, bb)))
+  ((NCCHANNEL_INITIALIZER((fr), (fg), (fb)) << 32ull) + \
+   (NCCHANNEL_INITIALIZER((br), (bg), (bb))))
 
 // These lowest-level functions manipulate a channel encodings directly. Users
 // will typically manipulate ncplanes' and nccells' channels through their
@@ -2122,7 +2122,7 @@ ncplane_putstr_aligned(struct ncplane* n, int y, ncalign_e align, const char* s)
   ncstrwidth(s, &validbytes, &validwidth);
   int xpos = ncplane_halign(n, align, validwidth);
   if(xpos < 0){
-    return -1;
+    xpos = 0;
   }
   return ncplane_putstr_yx(n, y, xpos, s);
 }
@@ -2214,7 +2214,7 @@ ncplane_putwstr_aligned(struct ncplane* n, int y, ncalign_e align,
   int width = wcswidth(gclustarr, INT_MAX);
   int xpos = ncplane_halign(n, align, width);
   if(xpos < 0){
-    return -1;
+    xpos = 0;
   }
   return ncplane_putwstr_yx(n, y, xpos, gclustarr);
 }
